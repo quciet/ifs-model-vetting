@@ -1,6 +1,6 @@
 # IFs Model Vetting
 
-Local browser application for comparing IFs `.run.db` outputs. It opens source databases read-only and decodes actual Parquet coordinates through the existing IFs Parquet.Net library.
+Local browser application for comparing IFs `.run.db` outputs. It opens source databases read-only and decodes actual Parquet coordinates through the existing IFs Parquet.Net library. The app is [MIT licensed](LICENSE); bundled dependencies retain their own licenses, listed in `THIRD_PARTY_NOTICES.txt`. The installer displays the license and an included-software notice before installation. Packages bundle Python 3.14.8 and NumPy 2.5.3.
 
 For end users, download the installer from [GitHub Releases](https://github.com/quciet/ifs-model-vetting/releases), then open IFs Model Vetting from the Start menu or desktop shortcut. Python, NumPy, Tcl/Tk, and the .NET decoder runtime are bundled. A small desktop launcher opens the browser interface and stops its local service when closed. The installed version chooses an available local port automatically. See `USER_GUIDE.txt` for user instructions. Access to this private repository is required to download releases.
 
@@ -24,4 +24,5 @@ Audit metrics describe that selected trajectory: mean sMAPE (0–200%, with both
 
 Category audit ledgers are saved as `Core_audit.csv`, `Dyadic_audit.csv`, and `Other_audit.csv`, alongside the original point-level differences. Click an audit row or overview bar to open the selected cohort's trajectory and delta chart. Charts can be saved as SVG. Completed reports remain available to existing browser tabs after server restarts; comparisons made before audit support must be rerun to populate the new views.
 
-To rebuild distributions, create a Python 3.13 packaging environment with `packaging/requirements-build.txt`, supply a .NET 10 SDK and Inno Setup compiler, then run `build.ps1`. Its optional `DotnetPath`, `PythonPath`, and `InnoPath` parameters accept your tool locations; defaults use workspace-local `build-tools` and `.packaging-venv`. Dependency notices and license texts are included in both packages. Runtime files, temporary build tools, developer settings, and model run data are not source-controlled or mixed into the source Gem folder.
+To rebuild distributions, create a Python 3.14.8 packaging environment with `packaging/requirements-build.txt`, supply a .NET 10 SDK and Inno Setup compiler, then run `build.ps1`. Its optional `DotnetPath`, `PythonPath`, and `InnoPath` parameters accept your tool locations; defaults use workspace-local `build-tools` and `.packaging-venv314`. Dependency notices and license texts are included in both packages. Runtime files, temporary build tools, developer settings, and model run data are not source-controlled or mixed into the source Gem folder.
+

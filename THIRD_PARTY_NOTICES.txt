@@ -1,6 +1,6 @@
 IFs Model Vetting includes the following third-party components:
 
-Python 3.13: Python Software Foundation license (licenses/Python.txt).
+Python 3.14.8: Python Software Foundation license (licenses/Python.txt).
 NumPy 2.5.3 and its bundled libraries: license texts in licenses/NumPy.
 PyInstaller 6.22.3 bootloader: GPL with the distribution exception
   described in licenses/PyInstaller.txt.

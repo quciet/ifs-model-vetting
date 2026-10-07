@@ -1,4 +1,4 @@
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.1"
 [Setup]
 AppId={{36E1A6E2-60A5-47D0-A947-11A716ED46B6}
 AppName=IFs Model Vetting
@@ -15,6 +15,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
+LicenseFile=..\LICENSE
+InfoBeforeFile=INSTALLATION_NOTICE.txt
 UninstallDisplayIcon={app}\IFsModelVetting.exe
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"

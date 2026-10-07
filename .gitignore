@@ -6,6 +6,7 @@ results/
 output/playwright/
 settings.json
 .packaging-venv/
+.packaging-venv314/
 build-tools/
 build/
 dist/
