@@ -1,0 +1,14 @@
+__pycache__/
+decoder/bin/
+decoder/obj/
+results/
+.playwright-cli/
+output/playwright/
+settings.json
+.packaging-venv/
+build-tools/
+build/
+dist/
+release/
+decoder-runtime/
+output/

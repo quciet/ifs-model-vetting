@@ -1,0 +1,14 @@
+IFs Model Vetting includes the following third-party components:
+
+Python 3.13: Python Software Foundation license (licenses/Python.txt).
+NumPy 2.5.3 and its bundled libraries: license texts in licenses/NumPy.
+PyInstaller 6.22.3 bootloader: GPL with the distribution exception
+  described in licenses/PyInstaller.txt.
+Tcl/Tk: license texts in licenses/Tcl.txt and licenses/Tk.txt.
+.NET 10 runtime: licenses/DotNet.txt and licenses/DotNet-Notices.txt.
+Parquet.Net 2.1.4: MIT license (licenses/Parquet.Net.txt).
+
+The installer is generated with Inno Setup 6.7.3.
+These notices describe bundled components; they do not assert ownership of IFs.
+
+The Parquet.Net 2.1.4 package metadata also credits Copyright (c) 2017-2018 by Elastacloud Ltd.
