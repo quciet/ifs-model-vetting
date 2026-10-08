@@ -185,6 +185,9 @@ def compare(job, request):
             writer = csv.writer(output)
             writer.writerow(['Variable', 'Coordinates', 'Labels', 'Run1', 'Run2', 'Delta', 'RelativeDelta'])
             for index, variable in enumerate(selected):
+                if JOBS[job].get('stop_requested'):
+                    JOBS[job].update(status='stopped', progress='Stopped')
+                    return
                 with LOCK:
                     JOBS[job].update(progress=f'{index+1}/{len(selected)}: {variable}')
                 try:
@@ -217,6 +220,9 @@ def compare(job, request):
                     summaries.append(metrics)
                 except Exception as exc:
                     summaries.append({'variable': variable, 'error': str(exc)})
+        if JOBS[job].get('stop_requested'):
+            JOBS[job].update(status='stopped', progress='Stopped')
+            return
         for lane in ('Core','Dyadic','Other'):
             rows = sorted((row for row in audits if row['lane']==lane),
                           key=lambda row: -(row['mean_smape'] if row['mean_smape'] is not None else -1))
@@ -316,6 +322,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.path == '/api/stop':
+                with LOCK:
+                    for state in JOBS.values():
+                        if state['status'] == 'running': state['stop_requested'] = True
+                return self.send({'ok': True})
             if self.path == '/api/select-installation':
                 request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 with tempfile.TemporaryDirectory(prefix='ifs-folder-') as folder:
