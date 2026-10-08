@@ -29,3 +29,14 @@ the host to reopen a report. The comparison tool can still run on its own.
 Older generated desktop distributions remain in ignored `dist` and `release`
 directories for reference. New Companion builds belong to `ifs-companion`.
 This project is MIT licensed; dependency notices remain in THIRD_PARTY_NOTICES.txt.
+
+## Independent Companion package
+
+After building the decoder, run `packaging/build-tool.py --python <packaging-python>`
+using Python with the dependencies in `packaging/requirements-build.txt`. This
+produces a self-contained `.ifstool` and checksum under ignored `release/`.
+The package reuses the existing comparison engine and UI through a small
+authenticated loopback adapter (`comparison_tool.py`). Companion supplies the
+shared data folder, so installing or removing the package preserves reports.
+Official packages and their catalog are published through the `ifs-companion`
+repository. This repository remains responsible for the comparison source.
