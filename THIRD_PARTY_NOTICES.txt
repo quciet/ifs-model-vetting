@@ -1,4 +1,4 @@
-IFs Model Vetting includes the following third-party components:
+IFsCompanion includes the following third-party components:
 
 Python 3.14.8: Python Software Foundation license (licenses/Python.txt).
 NumPy 2.5.3 and its bundled libraries: license texts in licenses/NumPy.
@@ -12,3 +12,5 @@ The installer is generated with Inno Setup 6.7.3.
 These notices describe bundled components; they do not assert ownership of IFs.
 
 The Parquet.Net 2.1.4 package metadata also credits Copyright (c) 2017-2018 by Elastacloud Ltd.
+
+Microsoft WebView2 SDK 1.0.4258.31: licenses/WebView2.txt and licenses/WebView2-Notices.txt. Microsoft WebView2 Runtime is installed separately by its Microsoft bootstrapper if needed.

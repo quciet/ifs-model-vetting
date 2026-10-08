@@ -1,28 +1,31 @@
 # IFs Model Vetting
 
-Local browser application for comparing IFs `.run.db` outputs. It opens source databases read-only and decodes actual Parquet coordinates through the existing IFs Parquet.Net library. The app is [MIT licensed](LICENSE); bundled dependencies retain their own licenses, listed in `THIRD_PARTY_NOTICES.txt`. The installer displays the license and an included-software notice before installation. Packages bundle Python 3.14.8 and NumPy 2.5.3.
+Standalone IFs runfile comparison tool, also bundled by the separate
+`ifs-companion` application. This repository owns comparison logic, trajectory
+audits, the comparison UI, the .NET Parquet decoder, and their tests.
 
-For end users, download the installer from [GitHub Releases](https://github.com/quciet/ifs-model-vetting/releases), then open IFs Model Vetting from the Start menu or desktop shortcut. Python, NumPy, Tcl/Tk, and the .NET decoder runtime are bundled. A small desktop launcher opens the browser interface and stops its local service when closed. The installed version chooses an available local port automatically. See `USER_GUIDE.txt` for user instructions. Access to this private repository is required to download releases.
+Use Python 3.14 with NumPy (`python -m pip install numpy==2.5.3`) and a .NET 10 SDK.
+Run `./build.ps1` to publish the decoder, then `./start.ps1 -PythonPath <python.exe>`
+and open http://127.0.0.1:8765. Select an IFs folder containing DATA and RUNFILES,
+choose two runs, load shared variables, and compare. Run
+`python -m unittest discover -s tests -v` for the tool tests.
 
-The portable ZIP is an alternative: extract the complete folder and open `IFsModelVetting.exe`, keeping `_internal` beside it. These first packages are unsigned Windows x64 builds. Test with a small group before broader distribution; signing requires a publisher certificate that is not configured here.
+Source runfiles are opened read-only. Stored coordinate tuples drive alignment;
+incompatible dimensions are skipped, partial payloads are identified, and
+nonfinite values are excluded from numeric metrics. Each variable retains its own
+units. Audits provide descriptive evidence, not causal or pass/fail judgments.
+Completed reports and arrays are saved under `%LOCALAPPDATA%/IFsModelVetting`;
+`IFS_VETTING_DATA_DIR` overrides the location for testing.
 
-For development, `start.ps1` publishes the decoder and starts the service on port 8765. Building from source requires Python with NumPy and a .NET 10 SDK. The Parquet.Net library is retained in `decoder/vendor`, so builds no longer depend on the original IFs development checkout.
+## Companion integration
 
-After cloning, install NumPy with `python -m pip install numpy==2.5.3`, then run `./start.ps1` in PowerShell. Run the source checks with `python -m unittest discover -s tests -v`. Gem documents and example model outputs are kept separately and are not included in this repository. Release binaries are attached to versioned GitHub releases rather than committed to Git.
+Keep `ifs-companion` beside this checkout. Its build reads this repository directly
+and bundles the tool into its installer. No Companion shell, desktop host, or
+installer source is maintained here. The existing local HTTP API supplies
+installation selection, metadata, comparisons, job status, reports, and exports.
+`/api/recent` lists comparison jobs; the UI exposes `openCompanionReport(id)` for
+the host to reopen a report. The comparison tool can still run on its own.
 
-Select the IFs installation folder using Browse or enter its path. The fixed installation layout places `DATA` and `RUNFILES` directly beneath that root. The app validates both folders, remembers your selection in `%LOCALAPPDATA%/IFsModelVetting/settings.json`, and recursively scans `RUNFILES` to populate both run dropdowns. SQLite `.run.db` and `.run` files are supported; legacy non-SQLite run files are skipped. Nested files show their relative paths to distinguish matching filenames. Rescan installation refreshes the list. New installations begin with no personal installation path selected.
-
-Choose two runs, load shared variables, select outputs, and compare. Start with a small selection before comparing all outputs. Click a summary row to view trajectories; each additional dimension has its own selector, including origin and destination for bilateral series. Flagged coordinate-level differences export to CSV. Each comparison saves a report and aligned arrays under `%LOCALAPPDATA%/IFsModelVetting/results`. Source launches copy earlier App settings/results into this location when not already present, retaining the originals. Installer updates and uninstall leave user data intact. `IFS_VETTING_DATA_DIR` can override the storage directory for testing.
-
-Comparison keys are the stored coordinate tuples. Dimension order and bucket mappings must match; incompatible variables are explicitly skipped. Unmatched payload coordinates are counted separately. Nonfinite values are counted and excluded from numerical metrics. Constant offsets are retained. Relative differences at zero baseline are blank in CSV. Metrics retain each output's units and are not summed across variables.
-
-This first version compares two runs and provides descriptive evidence for human review. It does not assign causal diagnoses or pass/fail judgments. All selected outputs are processed one variable at a time, but an individual payload is decoded in memory. No cross-version geographic harmonization is attempted. The server binds only to localhost; run it for local use.
-
-The trajectory audit follows the updated Gem's core/bilateral/other review categories. Core membership is defined in `diagnostics.py`. Each additional sector or partner produces a tracked output row. Within that slice, the selected country has the largest cumulative absolute between-run difference over finite aligned years. Bilateral rows fix the partner and choose the origin. Global outputs retain a global trajectory.
-
-Audit metrics describe that selected trajectory: mean sMAPE (0–200%, with both-zero years contributing zero), SSE, Pearson correlation, between-run difference sign crossings, first flagged year, and maximum-difference year. Constant-series correlation is undefined. Crossings ignore within-tolerance differences and break across missing years or nonfinite values. sMAPE is sensitive to small denominators; SSE remains in squared original units. The overview ranks by sMAPE within each review category and makes no pass/fail or causal claim. Aggregate sums are not calculated for rates, indexes, or other outputs whose aggregation semantics have not been verified.
-
-Category audit ledgers are saved as `Core_audit.csv`, `Dyadic_audit.csv`, and `Other_audit.csv`, alongside the original point-level differences. Click an audit row or overview bar to open the selected cohort's trajectory and delta chart. Charts can be saved as SVG. Completed reports remain available to existing browser tabs after server restarts; comparisons made before audit support must be rerun to populate the new views.
-
-To rebuild distributions, create a Python 3.14.8 packaging environment with `packaging/requirements-build.txt`, supply a .NET 10 SDK and Inno Setup compiler, then run `build.ps1`. Its optional `DotnetPath`, `PythonPath`, and `InnoPath` parameters accept your tool locations; defaults use workspace-local `build-tools` and `.packaging-venv314`. Dependency notices and license texts are included in both packages. Runtime files, temporary build tools, developer settings, and model run data are not source-controlled or mixed into the source Gem folder.
-
+Older generated desktop distributions remain in ignored `dist` and `release`
+directories for reference. New Companion builds belong to `ifs-companion`.
+This project is MIT licensed; dependency notices remain in THIRD_PARTY_NOTICES.txt.

@@ -13,3 +13,18 @@ dist/
 release/
 decoder-runtime/
 output/
+
+desktop/bin/
+desktop/obj/
+desktop-runtime/
+
+# Local configuration, credentials, and development artifacts
+.env
+.env.*
+!.env.example
+.venv/
+.pytest_cache/
+*.log
+*.tmp
+*.bak
+settings.json

@@ -1,24 +1,5 @@
 IFs Model Vetting
 
-Install using IFsModelVetting-Setup-0.1.1-win-x64.exe, then open IFs Model Vetting
-from the Start menu or desktop shortcut. Python 3.14.8, NumPy 2.5.3, and the .NET runtime are bundled; no separate installation is needed. The installer displays the MIT license and included-software notice before installation.
-
-The launcher opens the comparison interface in your default browser. Keep the
-launcher open while working. Use Quit or close the launcher when finished.
-
-1. Browse to your IFs installation folder (the folder containing DATA and RUNFILES).
-2. Choose the baseline and comparison runs.
-3. Load shared variables, select outputs, and compare.
-4. Click a result or audit row to inspect trajectories. Export CSVs or SVG charts.
-
-Settings, results, and logs are stored in:
-  %LOCALAPPDATA%\IFsModelVetting
-Updates and uninstalling the app leave your results there.
-
-For portable use, extract the complete ZIP and open IFsModelVetting.exe.
-Keep its _internal folder beside the executable. The portable version also stores
-results in your user application-data folder.
-
-Windows 10 (version 1809 or later) or Windows 11, x64, and a web browser are required.
-The app provides numerical evidence; reviewers decide whether changes are expected.
-
+Run start.ps1 and open http://127.0.0.1:8765.
+Select an IFs installation, choose two runfiles, load variables, and compare.
+For the desktop application, use the separate ifs-companion project.

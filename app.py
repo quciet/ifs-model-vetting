@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import os
 import shutil
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -24,8 +25,6 @@ DATA_ROOT = pathlib.Path(os.environ.get('IFS_VETTING_DATA_DIR') or
                          (pathlib.Path(os.environ.get('LOCALAPPDATA', pathlib.Path.home())) / 'IFsModelVetting'))
 DECODER_EXE = ROOT / 'decoder-runtime/Decoder.exe'
 DECODER = ROOT / 'decoder/bin/Release/net10.0/Decoder.dll'
-DEFAULT_INSTALLATION = pathlib.Path(r'D:\IFs Dev Code\ifs-872')
-DEFAULT_RUNS = DEFAULT_INSTALLATION / 'RUNFILES'
 SETTINGS = DATA_ROOT / 'settings.json'
 JOBS = {}
 LOCK = threading.Lock()
@@ -89,7 +88,7 @@ def restore_jobs():
             report=json.loads(path.read_text(encoding='utf-8'))
             report['buckets']={int(dim):{int(key):label for key,label in values.items()}
                                for dim,values in report['buckets'].items()}
-            JOBS[path.parent.name]={'status':'complete','progress':'Complete','report':report}
+            JOBS[path.parent.name]={'status':'complete','progress':'Complete','report':report,'created':path.stat().st_mtime}
         except (ValueError,KeyError,TypeError):
             continue
 
@@ -243,6 +242,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', content)
         self.send_header('Content-Length', str(len(body)))
+        if content.startswith('text/csv'):
+            self.send_header('Content-Disposition', 'attachment; filename="IFsCompanion-export.csv"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -252,10 +253,22 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             if url.path == '/':
                 return self.send((ROOT/'index.html').read_bytes(), 'text/html; charset=utf-8')
+            if url.path == '/api/recent':
+                with LOCK:
+                    entries = []
+                    for identity, state in JOBS.items():
+                        report = state.get('report', {})
+                        a, b = report.get('run1', state.get('run1', '')), report.get('run2', state.get('run2', ''))
+                        entries.append({'id': identity, 'status': state['status'], 'created': state.get('created', 0),
+                                        'title': pathlib.Path(a).name+' vs '+pathlib.Path(b).name if a and b else 'Comparison '+identity[:8]})
+                return self.send({'jobs': sorted(entries, key=lambda item: item['created'], reverse=True)})
             if url.path == '/audit.js':
                 return self.send((ROOT/'audit.js').read_bytes(), 'text/javascript; charset=utf-8')
             if url.path == '/favicon.ico':
                 return self.send(b'', 'image/x-icon', status=204)
+            if url.path == '/api/status':
+                with LOCK:
+                    return self.send({'running': any(j['status'] == 'running' for j in JOBS.values())})
             if url.path == '/api/runs':
                 installation = query.get('installation',[saved_installation()])[0]
                 return self.send(installation_layout(installation) if installation else empty_installation())
@@ -328,7 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                 if any(j['status']=='running' for j in JOBS.values()):
                     raise ValueError('A comparison is already running')
                 job = uuid.uuid4().hex
-                JOBS[job] = {'status':'running', 'progress':'Reading metadata'}
+                JOBS[job] = {'status':'running', 'progress':'Reading metadata', 'created':time.time(), 'run1':request['a'], 'run2':request['b']}
             threading.Thread(target=compare, args=(job,request), daemon=True).start()
             self.send({'job':job})
         except Exception as exc:
