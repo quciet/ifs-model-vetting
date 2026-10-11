@@ -117,7 +117,17 @@ def metadata(path):
         return {'variables': variables, 'buckets': buckets, 'core_variables': sorted(CORE_VARIABLES)}
 
 
-def decode(db, variable, dims):
+class ComparisonStopped(Exception):
+    pass
+
+
+def check_stop(job):
+    if job is not None and JOBS[job].get('stop_requested'):
+        raise ComparisonStopped()
+
+
+def decode(db, variable, dims, job=None):
+    check_stop(job)
     row = db.execute('SELECT Data FROM ifs_var_blob WHERE VariableName=?', (variable,)).fetchone()
     if row is None or row[0] is None:
         raise ValueError('Missing payload for ' + variable)
@@ -125,10 +135,23 @@ def decode(db, variable, dims):
         source, target = pathlib.Path(folder) / 'input.parquet', pathlib.Path(folder) / 'output.bin'
         source.write_bytes(row[0])
         command = [str(DECODER_EXE)] if DECODER_EXE.exists() else ['dotnet', str(DECODER)]
-        result = subprocess.run(command+[str(source),str(target)], capture_output=True, text=True,
-                                creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
-        if result.returncode:
-            raise ValueError('IFs decoder failed: ' + result.stderr[-1200:])
+        with subprocess.Popen(command+[str(source),str(target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0) as process:
+            try:
+                while True:
+                    check_stop(job)
+                    try:
+                        _, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except ComparisonStopped:
+                process.kill()
+                process.communicate()
+                raise
+            if process.returncode:
+                raise ValueError('IFs decoder failed: ' + stderr[-1200:])
+        check_stop(job)
         with target.open('rb') as stream:
             header = np.frombuffer(stream.read(8), dtype='<i4')
             axes, count = map(int, header)
@@ -198,26 +221,35 @@ def compare(job, request):
                     for dim in set(dims):
                         if ma['buckets'][dim] != mb['buckets'][dim]:
                             raise ValueError(f'Dimension {dim} labels or coverage differ; comparison skipped')
-                    a, b = decode(da, variable, dims), decode(db, variable, dims)
+                    a, b = decode(da, variable, dims, job), decode(db, variable, dims, job)
+                    check_stop(job)
                     for payload in (a, b):
                         for axis, dim in enumerate(dims):
                             unknown = set(map(int, np.unique(payload['keys'][:, axis]))) - ma['buckets'][dim].keys()
                             if unknown:
                                 raise ValueError(f'Unmapped coordinates on dimension {dim}: {sorted(unknown)[:10]}')
+                    check_stop(job)
                     keys, x, y, only_a, only_b = aligned(a, b)
+                    check_stop(job)
                     metrics, delta, relative, changed = calculate(keys, x, y, atol, rtol)
+                    check_stop(job)
                     slices = audit_slices(variable, dims, ma['buckets'], keys, x, y, atol, rtol)
+                    check_stop(job)
                     audits.extend(slices)
                     metrics.update(variable=variable, display=va['display'], dims=dims, only_run1=only_a, only_run2=only_b)
                     expected = math.prod(len(ma['buckets'][dim]) for dim in dims)
                     metrics.update(expected_points=expected, payload_points_run1=len(a), payload_points_run2=len(b),
                                    missing_coordinates_run1=max(0, expected-len(a)), missing_coordinates_run2=max(0, expected-len(b)))
-                    for i in np.flatnonzero(changed):
+                    for row_index, i in enumerate(np.flatnonzero(changed)):
+                        if row_index % 256 == 0: check_stop(job)
                         labels = [ma['buckets'][dim].get(int(key), f'UNKNOWN:{key}') for dim, key in zip(dims, keys[i])]
                         writer.writerow([variable, json.dumps(keys[i].tolist()), json.dumps(labels), x[i], y[i], delta[i], relative[i] if np.isfinite(relative[i]) else ''])
                     # Store coordinate-level aligned data for charts on demand.
+                    check_stop(job)
                     np.savez_compressed(directory / (variable + '.npz'), keys=keys, a=x, b=y)
                     summaries.append(metrics)
+                except ComparisonStopped:
+                    raise
                 except Exception as exc:
                     summaries.append({'variable': variable, 'error': str(exc)})
         if JOBS[job].get('stop_requested'):
@@ -237,6 +269,9 @@ def compare(job, request):
         (directory/'report.json').write_text(json.dumps(report, allow_nan=False), encoding='utf-8')
         with LOCK:
             JOBS[job].update(status='complete', report=report, progress='Complete')
+    except ComparisonStopped:
+        with LOCK:
+            JOBS[job].update(status='stopped', progress='Stopped')
     except Exception as exc:
         with LOCK:
             JOBS[job].update(status='failed', error=str(exc))
@@ -325,7 +360,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/stop':
                 with LOCK:
                     for state in JOBS.values():
-                        if state['status'] == 'running': state['stop_requested'] = True
+                        if state['status'] == 'running':
+                            state.update(stop_requested=True, progress='Stopping…')
                 return self.send({'ok': True})
             if self.path == '/api/select-installation':
                 request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
