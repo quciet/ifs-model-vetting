@@ -40,3 +40,9 @@ authenticated loopback adapter (`comparison_tool.py`). Companion supplies the
 shared data folder, so installing or removing the package preserves reports.
 Official packages and their catalog are published through the `ifs-companion`
 repository. This repository remains responsible for the comparison source.
+
+## Baseline horizon and multiple comparisons
+
+Select one baseline and multiple comparison runs with Ctrl/Shift. The baseline calendar years anchor every comparison and chart. Loading indicators shows the baseline indicators available in at least one selected run; the list identifies availability across runs. Missing indicators or incompatible country/sector mappings skip only the affected indicator/run pair. Year keys can differ: the app matches actual calendar-year labels, reports missing baseline periods and excludes comparison years outside the baseline years. It also identifies holes inside the horizon.
+
+Each run has independent numerical measures, audit cohorts, and year coverage. Summary rows show matched years against the baseline, and audit rows show finite matched years. Scores computed over different periods require care when comparing runs. Trajectories overlay the baseline once with all selected runs inside the baseline horizon, leaving missing years blank. Difference lines and SVG exports use the same horizon and run colors. CSV exports identify each comparison run. Previously saved single-pair reports remain readable.

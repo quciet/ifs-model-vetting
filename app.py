@@ -13,11 +13,13 @@ import sys
 import os
 import shutil
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import numpy as np
 from diagnostics import CORE_VARIABLES, LEDGER_FIELDS, audit_slices, trajectory_metrics
+from horizon import coverage, anchored_payload, year_map
 
 ROOT = pathlib.Path(__file__).resolve().parent
 FROZEN = getattr(sys, 'frozen', False)
@@ -99,7 +101,7 @@ def connect(path):
 
 
 def metadata(path):
-    with connect(path) as db:
+    with closing(connect(path)) as db:
         names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         required = {'ifs_var', 'ifs_var_dim', 'ifs_dim_bucket', 'ifs_var_blob'}
         if not required <= names:
@@ -122,7 +124,7 @@ class ComparisonStopped(Exception):
 
 
 def check_stop(job):
-    if job is not None and JOBS[job].get('stop_requested'):
+    if job is not None and (JOBS[job].get('stop_requested') or JOBS.get(JOBS[job].get('_parent'), {}).get('stop_requested')):
         raise ComparisonStopped()
 
 
@@ -194,59 +196,61 @@ def calculate(keys, a, b, atol, rtol):
     return metrics, delta, relative, changed
 
 
-def compare(job, request):
-    directory = DATA_ROOT / 'results' / job
+def compare_pair(job, request):
+    directory = pathlib.Path(JOBS[job].get('_directory', DATA_ROOT / 'results' / job))
     directory.mkdir(parents=True, exist_ok=True)
     try:
         ma, mb = metadata(request['a']), metadata(request['b'])
+        horizon = coverage(ma['buckets'], mb['buckets'])
+        chart_buckets = {**ma['buckets'], 0: {year: str(year) for year in horizon['baseline_years']}}
         atol, rtol = float(request.get('atol', 1e-6)), float(request.get('rtol', 1e-5))
         if not math.isfinite(atol) or not math.isfinite(rtol) or min(atol, rtol) < 0:
             raise ValueError('Tolerances must be finite and nonnegative')
         selected = request['variables']
         summaries, audits = [], []
-        with connect(request['a']) as da, connect(request['b']) as db, (directory/'differences.csv').open('w', newline='', encoding='utf-8') as output:
+        with closing(connect(request['a'])) as da, closing(connect(request['b'])) as db, (directory/'differences.csv').open('w', newline='', encoding='utf-8') as output:
             writer = csv.writer(output)
             writer.writerow(['Variable', 'Coordinates', 'Labels', 'Run1', 'Run2', 'Delta', 'RelativeDelta'])
             for index, variable in enumerate(selected):
-                if JOBS[job].get('stop_requested'):
-                    JOBS[job].update(status='stopped', progress='Stopped')
-                    return
+                check_stop(job)
                 with LOCK:
-                    JOBS[job].update(progress=f'{index+1}/{len(selected)}: {variable}')
+                    progress=f'{index+1}/{len(selected)}: {variable}'
+                    JOBS[job].update(progress=progress)
+                    parent = JOBS[job].get('_parent')
+                    if parent: JOBS[parent].update(progress=JOBS[job]['_label']+' · '+progress)
                 try:
                     va, vb = ma['variables'][variable], mb['variables'][variable]
                     dims = va['dims']
                     if dims != vb['dims']:
                         raise ValueError('Dimension order differs between runs')
                     for dim in set(dims):
-                        if ma['buckets'][dim] != mb['buckets'][dim]:
+                        if dim != 0 and ma['buckets'][dim] != mb['buckets'][dim]:
                             raise ValueError(f'Dimension {dim} labels or coverage differ; comparison skipped')
                     a, b = decode(da, variable, dims, job), decode(db, variable, dims, job)
                     check_stop(job)
-                    for payload in (a, b):
-                        for axis, dim in enumerate(dims):
-                            unknown = set(map(int, np.unique(payload['keys'][:, axis]))) - ma['buckets'][dim].keys()
-                            if unknown:
-                                raise ValueError(f'Unmapped coordinates on dimension {dim}: {sorted(unknown)[:10]}')
+                    a = anchored_payload(a, dims, ma['buckets'], ma['buckets'])
+                    b = anchored_payload(b, dims, mb['buckets'], ma['buckets'])
                     check_stop(job)
                     keys, x, y, only_a, only_b = aligned(a, b)
                     check_stop(job)
                     metrics, delta, relative, changed = calculate(keys, x, y, atol, rtol)
                     check_stop(job)
-                    slices = audit_slices(variable, dims, ma['buckets'], keys, x, y, atol, rtol)
+                    slices = audit_slices(variable, dims, chart_buckets, keys, x, y, atol, rtol)
                     check_stop(job)
                     audits.extend(slices)
                     metrics.update(variable=variable, display=va['display'], dims=dims, only_run1=only_a, only_run2=only_b)
-                    expected = math.prod(len(ma['buckets'][dim]) for dim in dims)
+                    expected = math.prod(len(chart_buckets[dim]) for dim in dims)
+                    metrics['compared_years'] = sorted(set(map(int, keys[:, dims.index(0)]))) if 0 in dims else []
+                    metrics['baseline_year_count'] = len(horizon['baseline_years']) if 0 in dims else None
                     metrics.update(expected_points=expected, payload_points_run1=len(a), payload_points_run2=len(b),
                                    missing_coordinates_run1=max(0, expected-len(a)), missing_coordinates_run2=max(0, expected-len(b)))
                     for row_index, i in enumerate(np.flatnonzero(changed)):
                         if row_index % 256 == 0: check_stop(job)
-                        labels = [ma['buckets'][dim].get(int(key), f'UNKNOWN:{key}') for dim, key in zip(dims, keys[i])]
+                        labels = [chart_buckets[dim].get(int(key), f'UNKNOWN:{key}') for dim, key in zip(dims, keys[i])]
                         writer.writerow([variable, json.dumps(keys[i].tolist()), json.dumps(labels), x[i], y[i], delta[i], relative[i] if np.isfinite(relative[i]) else ''])
                     # Store coordinate-level aligned data for charts on demand.
                     check_stop(job)
-                    np.savez_compressed(directory / (variable + '.npz'), keys=keys, a=x, b=y)
+                    np.savez_compressed(directory / (variable + '.npz'), keys=keys, a=x, b=y, baseline_keys=a['keys'], baseline_values=a['value'], comparison_keys=b['keys'], comparison_values=b['value'])
                     summaries.append(metrics)
                 except ComparisonStopped:
                     raise
@@ -264,7 +268,7 @@ def compare(job, request):
                 ledger.writerows(rows)
         report = {'run1': request['a'], 'run2': request['b'], 'atol': atol, 'rtol': rtol,
                   'audits': audits,
-                  'summaries': summaries, 'buckets': ma['buckets'], 'variables_only_run1': sorted(ma['variables'].keys()-mb['variables'].keys()),
+                  'summaries': summaries, 'buckets': chart_buckets, 'coverage': horizon, 'variables_only_run1': sorted(ma['variables'].keys()-mb['variables'].keys()),
                   'variables_only_run2': sorted(mb['variables'].keys()-ma['variables'].keys())}
         (directory/'report.json').write_text(json.dumps(report, allow_nan=False), encoding='utf-8')
         with LOCK:
@@ -275,6 +279,121 @@ def compare(job, request):
     except Exception as exc:
         with LOCK:
             JOBS[job].update(status='failed', error=str(exc))
+
+
+def comparison_runs(request):
+    runs = request.get('comparisons', [request.get('b')])
+    if not isinstance(runs, list) or not runs or any(not isinstance(p, str) or not p for p in runs):
+        raise ValueError('Select at least one comparison run')
+    if len(runs) != len(set(runs)):
+        raise ValueError('Select each comparison run only once')
+    return runs
+
+
+def compare(job, request):
+    runs = comparison_runs(request)
+    directory = DATA_ROOT / 'results' / job
+    directory.mkdir(parents=True, exist_ok=True)
+    children = []
+    try:
+        atol, rtol = float(request.get('atol', 1e-6)), float(request.get('rtol', 1e-5))
+        if not math.isfinite(atol) or not math.isfinite(rtol) or min(atol, rtol) < 0:
+            raise ValueError('Tolerances must be finite and nonnegative')
+        baseline = metadata(request['a'])
+        years = sorted(year_map(baseline['buckets']).values())
+        report = {'schema_version': 2, 'run1': request['a'], 'run2': runs[0],
+                  'baseline_years': years, 'comparisons': [], 'summaries': [], 'audits': [],
+                  'atol': float(request.get('atol', 1e-6)), 'rtol': float(request.get('rtol', 1e-5)),
+                  'buckets': {**baseline['buckets'], 0: {year: str(year) for year in years}},
+                  'variables_only_run1': [], 'variables_only_run2': []}
+        for index, run in enumerate(runs):
+            check_stop(job)
+            identity = f'run-{index+1}'
+            child = job+'-'+identity
+            children.append(child)
+            JOBS[child] = {'status': 'running', '_parent': job, '_label': pathlib.Path(run).name,
+                           '_directory': str(directory / 'pairs' / identity)}
+            compare_pair(child, {**request, 'b': run})
+            state = JOBS[child]
+            check_stop(job)
+            if state['status'] == 'stopped': raise ComparisonStopped()
+            if state['status'] != 'complete':
+                report['comparisons'].append({'id': identity, 'run': run, 'error': state.get('error', 'Comparison failed')})
+                continue
+            pair = state['report']
+            report['comparisons'].append({'id': identity, 'run': run, 'coverage': pair['coverage'],
+                                          'variables_only_run1': pair['variables_only_run1'],
+                                          'variables_only_run2': pair['variables_only_run2']})
+            for key in ('summaries', 'audits'):
+                report[key].extend({**row, 'run_id': identity, 'comparison_run': run} for row in pair[key])
+        check_stop(job)
+        for filename in ['differences.csv', 'Core_audit.csv', 'Dyadic_audit.csv', 'Other_audit.csv']:
+            with (directory/filename).open('w', newline='', encoding='utf-8') as output:
+                writer = csv.writer(output)
+                header_written = False
+                for pair in report['comparisons']:
+                    source = directory/'pairs'/pair['id']/filename
+                    if not source.exists() or pair.get('error'): continue
+                    with source.open(newline='', encoding='utf-8') as stream:
+                        reader = csv.reader(stream)
+                        header = next(reader)
+                        if not header_written: writer.writerow(['ComparisonRun', *header]); header_written = True
+                        for row in reader:
+                            check_stop(job)
+                            writer.writerow([pair['run'], *row])
+        check_stop(job)
+        (directory/'report.json').write_text(json.dumps(report, allow_nan=False), encoding='utf-8')
+        with LOCK: JOBS[job].update(status='complete', report=report, progress='Complete')
+    except ComparisonStopped:
+        with LOCK: JOBS[job].update(status='stopped', progress='Stopped')
+    except Exception as exc:
+        with LOCK: JOBS[job].update(status='failed', error=str(exc))
+    finally:
+        for child in children: JOBS.pop(child, None)
+
+
+def series_data(job, variable, selectors):
+    report = JOBS[job]['report']
+    if report.get('schema_version') != 2:
+        return None
+    pairs = report['comparisons']
+    dims = next(row['dims'] for row in report['summaries'] if row['variable'] == variable and not row.get('error'))
+    if not dims or dims[0] != 0: raise ValueError('Chart requires a time axis first')
+    datasets = []
+    for pair in pairs:
+        filename = DATA_ROOT/'results'/job/'pairs'/pair['id']/(variable+'.npz')
+        if filename.exists():
+            with np.load(filename) as saved:
+                datasets.append((pair, {key: saved[key] for key in saved.files}))
+    if not datasets: raise ValueError('No trajectory data for this indicator')
+    baseline = datasets[0][1]
+    options = []
+    for axis, dim in enumerate(dims[1:], 1):
+        values = sorted(set(map(int, baseline['baseline_keys'][:,axis])))
+        options.append([{'key': k, 'label': report['buckets'][dim].get(k, str(k))} for k in values])
+    chosen = [int(selectors[i]) if i < len(selectors) else opts[0]['key'] for i, opts in enumerate(options)]
+    def values_for(keys, values):
+        mask = np.ones(len(keys), dtype=bool)
+        for axis, value in enumerate(chosen, 1): mask &= keys[:,axis] == value
+        return {int(k[0]): float(v) if math.isfinite(v) else None for k,v in zip(keys[mask], values[mask])}
+    base_values = values_for(baseline['baseline_keys'], baseline['baseline_values'])
+    by_id = {pair['id']: data for pair,data in datasets}
+    years = report['baseline_years']
+    comparisons, maps = [], []
+    for pair in pairs:
+        data = by_id.get(pair['id'])
+        values = values_for(data['comparison_keys'], data['comparison_values']) if data is not None else {}
+        # Never draw an unmatched comparison observation against a missing baseline observation.
+        values = {year: value for year,value in values.items() if year in base_values}
+        metrics = trajectory_metrics(np.array(years), np.array([base_values.get(y, np.nan) if base_values.get(y) is not None else np.nan for y in years]),
+                                     np.array([values.get(y, np.nan) if values.get(y) is not None else np.nan for y in years]), report['atol'], report['rtol'])
+        comparisons.append({'id': pair['id'], 'label': pathlib.Path(pair['run']).name, 'metrics': metrics,
+                            'coverage': pair.get('coverage'), 'error': pair.get('error') or (None if data is not None else 'Indicator unavailable or incompatible')})
+        maps.append(values)
+    points = [[year, base_values.get(year), *[values.get(year) for values in maps]] for year in years]
+    return {'options': options, 'chosen': chosen, 'points': points, 'dims': dims,
+            'baseline_label': pathlib.Path(report['run1']).name, 'comparisons': comparisons,
+            'metrics': comparisons[0]['metrics'], 'baseline_years': years}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -298,10 +417,11 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     entries = []
                     for identity, state in JOBS.items():
+                        if state.get('_parent'): continue
                         report = state.get('report', {})
                         a, b = report.get('run1', state.get('run1', '')), report.get('run2', state.get('run2', ''))
                         entries.append({'id': identity, 'status': state['status'], 'created': state.get('created', 0),
-                                        'title': pathlib.Path(a).name+' vs '+pathlib.Path(b).name if a and b else 'Comparison '+identity[:8]})
+                                        'title': pathlib.Path(a).name+' vs '+(str(len(report['comparisons']))+' runs' if len(report.get('comparisons', []))>1 else pathlib.Path(b).name) if a and b else 'Comparison '+identity[:8]})
                 return self.send({'jobs': sorted(entries, key=lambda item: item['created'], reverse=True)})
             if url.path == '/audit.js':
                 return self.send((ROOT/'audit.js').read_bytes(), 'text/javascript; charset=utf-8')
@@ -333,6 +453,8 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == '/api/series':
                 variable = query['variable'][0]
                 report = JOBS[job]['report']
+                multiple = series_data(job, variable, json.loads(query.get('selectors', ['[]'])[0]))
+                if multiple is not None: return self.send(multiple)
                 summary = next(s for s in report['summaries'] if s['variable']==variable and 'error' not in s)
                 with np.load(DATA_ROOT/'results'/job/(variable+'.npz')) as data:
                     keys, a, b = data['keys'], data['a'], data['b']
@@ -383,6 +505,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path != '/api/compare': raise ValueError('Unknown endpoint')
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             if not request.get('variables'): raise ValueError('Select at least one variable')
+            runs = comparison_runs(request)
+            request['b'] = runs[0]
             # Single worker avoids competing large payload allocations.
             with LOCK:
                 if any(j['status']=='running' for j in JOBS.values()):
