@@ -39,7 +39,7 @@ class MultiRunTests(unittest.TestCase):
         self.b=self.root/'b.db';run_file(self.b,list(range(2023,2051)),2,index_years=True)
         self.c=self.root/'c.db';run_file(self.c,list(range(2025,2101)),3,index_years=True)
         self.storage=patch.object(app,'DATA_ROOT',self.root/'saved');self.storage.start()
-        self.decoder=patch.object(app,'decode',side_effect=fixture_decode);self.decoder.start()
+        self.decoder=patch.object(app,'decode',side_effect=fixture_decode);self.decoder_mock=self.decoder.start()
         app.JOBS.clear()
     def tearDown(self):
         self.decoder.stop();self.storage.stop();app.JOBS.clear();self.temp.cleanup()
@@ -126,6 +126,17 @@ class MultiRunTests(unittest.TestCase):
     def test_previous_report_schema_uses_legacy_series_path(self):
         app.JOBS['old']={'status':'complete','report':{'run1':'a','run2':'b'}}
         self.assertIsNone(app.series_data('old','GDP',[]))
+    def test_shared_baseline_decodes_once_and_saves_no_pair_duplicates(self):
+        report=self.compare([self.a,self.b,self.c])
+        # One baseline decode plus one decode for each comparison.
+        self.assertEqual(self.decoder_mock.call_count,4)
+        folder=app.DATA_ROOT/'results/test'
+        self.assertTrue((folder/'baseline/GDP.npz').exists())
+        self.assertFalse(list((folder/'baseline').glob('*.npy')))
+        for pair in report['comparisons']:
+            with np.load(folder/'pairs'/pair['id']/'GDP.npz') as saved:
+                self.assertEqual(set(saved.files),{'comparison_keys','comparison_values'})
+            self.assertFalse((folder/'pairs'/pair['id']/'differences.csv').exists())
     def test_invalid_runs_rejected(self):
         for comparisons in [[],[''],[str(self.a),str(self.a)],'not a list']:
             with self.assertRaises(ValueError):app.comparison_runs({'comparisons':comparisons})

@@ -20,6 +20,8 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 from diagnostics import CORE_VARIABLES, LEDGER_FIELDS, audit_slices, trajectory_metrics
 from horizon import coverage, anchored_payload, year_map
+from decoder_session import DecoderSession
+DECODE_SESSION = threading.local()
 
 ROOT = pathlib.Path(__file__).resolve().parent
 FROZEN = getattr(sys, 'frozen', False)
@@ -137,22 +139,26 @@ def decode(db, variable, dims, job=None):
         source, target = pathlib.Path(folder) / 'input.parquet', pathlib.Path(folder) / 'output.bin'
         source.write_bytes(row[0])
         command = [str(DECODER_EXE)] if DECODER_EXE.exists() else ['dotnet', str(DECODER)]
-        with subprocess.Popen(command+[str(source),str(target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0) as process:
-            try:
-                while True:
-                    check_stop(job)
-                    try:
-                        _, stderr = process.communicate(timeout=0.1)
-                        break
-                    except subprocess.TimeoutExpired:
-                        continue
-            except ComparisonStopped:
-                process.kill()
-                process.communicate()
-                raise
-            if process.returncode:
-                raise ValueError('IFs decoder failed: ' + stderr[-1200:])
+        session = getattr(DECODE_SESSION, 'current', None)
+        if session is not None:
+            session.convert(source, target, job)
+        else:
+            with subprocess.Popen(command+[str(source),str(target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0) as process:
+                try:
+                    while True:
+                        check_stop(job)
+                        try:
+                            _, stderr = process.communicate(timeout=0.1)
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
+                except ComparisonStopped:
+                    process.kill()
+                    process.communicate()
+                    raise
+                if process.returncode:
+                    raise ValueError('IFs decoder failed: ' + stderr[-1200:])
         check_stop(job)
         with target.open('rb') as stream:
             header = np.frombuffer(stream.read(8), dtype='<i4')
@@ -172,6 +178,9 @@ def aligned(a, b):
     dtype = np.dtype([(f'k{i}', '<i2') for i in range(axes)])
     ka = np.ascontiguousarray(a['keys']).view(dtype).reshape(-1)
     kb = np.ascontiguousarray(b['keys']).view(dtype).reshape(-1)
+    if np.array_equal(ka, kb):
+        if len(np.unique(ka)) != len(ka): raise ValueError('Duplicate payload coordinates')
+        return a['keys'], a['value'].astype(float), b['value'].astype(float), 0, 0
     if len(np.unique(ka)) != len(ka) or len(np.unique(kb)) != len(kb):
         raise ValueError('Duplicate payload coordinates')
     common, ia, ib = np.intersect1d(ka, kb, return_indices=True)
@@ -226,9 +235,17 @@ def compare_pair(job, request):
                     for dim in set(dims):
                         if dim != 0 and ma['buckets'][dim] != mb['buckets'][dim]:
                             raise ValueError(f'Dimension {dim} labels or coverage differ; comparison skipped')
-                    a, b = decode(da, variable, dims, job), decode(db, variable, dims, job)
+                    parent = JOBS[job].get('_parent')
+                    baseline_file = DATA_ROOT/'results'/parent/'baseline'/(variable+'.npy') if parent else None
+                    if baseline_file is not None and baseline_file.exists():
+                        a = np.load(baseline_file, mmap_mode='r')
+                    else:
+                        a = anchored_payload(decode(da, variable, dims, job), dims, ma['buckets'], ma['buckets'])
+                        if baseline_file is not None:
+                            baseline_file.parent.mkdir(parents=True, exist_ok=True)
+                            np.save(baseline_file, a)
+                    b = decode(db, variable, dims, job)
                     check_stop(job)
-                    a = anchored_payload(a, dims, ma['buckets'], ma['buckets'])
                     b = anchored_payload(b, dims, mb['buckets'], ma['buckets'])
                     check_stop(job)
                     keys, x, y, only_a, only_b = aligned(a, b)
@@ -250,7 +267,7 @@ def compare_pair(job, request):
                         writer.writerow([variable, json.dumps(keys[i].tolist()), json.dumps(labels), x[i], y[i], delta[i], relative[i] if np.isfinite(relative[i]) else ''])
                     # Store coordinate-level aligned data for charts on demand.
                     check_stop(job)
-                    np.savez_compressed(directory / (variable + '.npz'), keys=keys, a=x, b=y, baseline_keys=a['keys'], baseline_values=a['value'], comparison_keys=b['keys'], comparison_values=b['value'])
+                    np.savez_compressed(directory / (variable + '.npz'), comparison_keys=b['keys'], comparison_values=b['value']) if parent else np.savez_compressed(directory / (variable + '.npz'), keys=keys, a=x, b=y, baseline_keys=a['keys'], baseline_values=a['value'], comparison_keys=b['keys'], comparison_values=b['value'])
                     summaries.append(metrics)
                 except ComparisonStopped:
                     raise
@@ -291,6 +308,14 @@ def comparison_runs(request):
 
 
 def compare(job, request):
+    command = [str(DECODER_EXE)] if DECODER_EXE.exists() else ['dotnet', str(DECODER)]
+    with DecoderSession(command, check_stop) as session:
+        DECODE_SESSION.current = session
+        try: _compare_session(job, request)
+        finally: DECODE_SESSION.current = None
+
+
+def _compare_session(job, request):
     runs = comparison_runs(request)
     directory = DATA_ROOT / 'results' / job
     directory.mkdir(parents=True, exist_ok=True)
@@ -341,6 +366,15 @@ def compare(job, request):
                         for row in reader:
                             check_stop(job)
                             writer.writerow([pair['run'], *row])
+                    source.unlink()
+        check_stop(job)
+        with LOCK: JOBS[job].update(progress='Saving shared baseline arrays')
+        for source in (directory/'baseline').glob('*.npy'):
+            check_stop(job)
+            baseline_array = np.load(source, mmap_mode='r')
+            try: np.savez_compressed(source.with_suffix('.npz'), records=baseline_array)
+            finally: baseline_array._mmap.close()
+            source.unlink()
         check_stop(job)
         (directory/'report.json').write_text(json.dumps(report, allow_nan=False), encoding='utf-8')
         with LOCK: JOBS[job].update(status='complete', report=report, progress='Complete')
@@ -366,7 +400,15 @@ def series_data(job, variable, selectors):
             with np.load(filename) as saved:
                 datasets.append((pair, {key: saved[key] for key in saved.files}))
     if not datasets: raise ValueError('No trajectory data for this indicator')
-    baseline = datasets[0][1]
+    baseline_file = DATA_ROOT/'results'/job/'baseline'/(variable+'.npy')
+    if baseline_file.exists():
+        baseline_array = np.load(baseline_file, mmap_mode='r')
+        baseline = {'baseline_keys': baseline_array['keys'], 'baseline_values': baseline_array['value']}
+    elif baseline_file.with_suffix('.npz').exists():
+        with np.load(baseline_file.with_suffix('.npz')) as saved: baseline_array = saved['records']
+        baseline = {'baseline_keys': baseline_array['keys'], 'baseline_values': baseline_array['value']}
+    else:
+        baseline = datasets[0][1]
     options = []
     for axis, dim in enumerate(dims[1:], 1):
         values = sorted(set(map(int, baseline['baseline_keys'][:,axis])))

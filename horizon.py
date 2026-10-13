@@ -40,6 +40,7 @@ def anchored_payload(payload, dims, own_buckets, baseline_buckets):
     anchor = set(year_map(baseline_buckets).values())
     for axis, dim in enumerate(dims):
         if dim == 0:
-            result['keys'][:, axis] = [mapping[int(key)] for key in result['keys'][:, axis]]
+            keys, inverse = np.unique(result['keys'][:, axis], return_inverse=True)
+            result['keys'][:, axis] = np.array([mapping[int(key)] for key in keys], dtype=np.int16)[inverse]
             result = result[np.isin(result['keys'][:, axis], list(anchor))]
     return result
